@@ -8,11 +8,18 @@ The principle: **the rules of the game are public; the enforcement details are o
 
 ---
 
+## Identity, briefly
+
+Anchorage supports stable pseudonymous participation while retaining bounded identities-per-real-person via low-friction third-party identity (email + OIDC). Pseudonyms are public; the binding to identity-establishing credentials is private and used by curators only under documented escalation. Named credit on manuscript projections is opt-in — pseudonymous credit is permitted but discouraged for high-impact projections, where academic legibility favors real names. Revocation invalidates future participation without rewriting graph history. Public reputation is per-cause; anti-abuse signals are global-per-identity, documented and audited. The full requirements sketch lives in the [PRD](./prd.md#identity).
+
+---
+
 ## Roles
 
 - **Contributor.** Anyone who proposes a node, edge, anchor, or synthesis. No prior reputation required to propose; reputation is required for proposals to merge into the canonical graph without staged review.
 - **Reviewer.** A contributor who has accumulated enough reputation in a topic (and ideally in the relevant sub-topic) to evaluate others' proposals. Reviewer assignment is randomized within the eligible pool, salted with calibration items.
-- **Curator.** A small set of trusted humans (initially: the maintainers) who handle edge cases the automated regime cannot: sub-topic creation in v0, dispute escalation, moderation of bad-faith behavior, governance proposals. Curator authority is bounded and auditable.
+- **Curator.** A small set of trusted humans (initially: the maintainers) who handle edge cases the automated regime cannot: sub-topic creation in v0, dispute escalation, moderation of bad-faith behavior, governance proposals. Curator authority is bounded, auditable, and revocable: every curator action is logged in a tamper-evident audit log; affected contributors see *that* an action occurred and the broad category, with specific signals redacted only where exposure would aid evasion; a separate auditor role periodically samples curator actions for review; cause-level curators can be removed through a documented process (multi-curator vote in early phases, broader contributor input as the cause matures). Wikipedia's hardest governance arm is curator capture and accountability — the design accepts that a single-curator-trust-point is unacceptable and that audit + removal need to exist before they are needed.
+- **Auditor.** A rotating role (filled by curators of *other* causes, or by senior reviewers nominated for the role) that periodically samples curator actions and surfaces irregular patterns. Auditors do not overturn individual actions but can trigger curator-removal processes.
 - **Maintainer.** Project-level role for the codebase and protocol. Distinct from per-cause curators.
 
 ---
@@ -33,18 +40,24 @@ The principle: **the rules of the game are public; the enforcement details are o
 
 ## Reputation
 
-- **Anchored at the cause level.** A contributor's reputation is a property of (contributor, cause), not of the contributor globally. Expertise is not interchangeable across causes.
-- **Refined by sub-topic.** The system tracks which sub-topics a contributor has worked in. A colon-screening expert is not interchangeable with a CRC microbiome researcher even within the same cause.
+Reputation is structured around a real trilemma — slow decay rewards consistency but enables stockpiling, fast decay punishes episodic experts, review-as-staking selects against ambition. The design acknowledges this directly rather than tuning around it.
+
+- **Two-component.** Slow-decay *demonstrated-competence* gates eligibility tiers; fast-decay *recent-activity* gates review assignment. Stockpiles don't translate into review authority without current presence.
+- **Anchored at the cause level, refined by sub-topic.** Cause-level reputation gets a contributor in the door to *propose* anywhere within the cause. Reviewer eligibility in a contested sub-topic requires demonstrated work *in that sub-topic*. Easy-sub-topic credibility does not parlay into reviewer authority over contested ones.
 - **Earned through confirmed contributions and accurate reviews.** Both proposing nodes that survive *and* reviewing accurately count.
-- **Lost through reverted contributions and inaccurate reviews.** When a contribution is later superseded for being wrong (not for being refined), or a reviewer accepts a proposal that gets reverted, reputation decreases.
-- **Per-topic, non-transferable, non-monetizable.** Reputation is not a token. It cannot be sold, transferred, or pooled. It exists only as a coordination signal within the system.
-- **Slow-moving.** Reputation changes are tuned to reward consistency, not bursts. Specific decay rates and weights are tuned against simulation.
+- **Lost through reverted contributions and inaccurate reviews.** Supersedes by other contributors (not self-supersedes) and failed calibration items decrease reputation.
+- **Review-credit normalized by claim difficulty.** Engaging hard syntheses is not dominated by rubber-stamping easy ones.
+- **Eligibility tiers public; numeric reputation private.** Tiers communicate what's possible; raw numbers don't become leaderboards.
+- **Per-topic, non-transferable, non-monetizable.** Reputation is not a token. Coordination signal only.
+- **Slow-moving.** Reputation changes reward consistency over bursts. Specific decay rates and weights are tuned against simulation.
+
+The full structure, including the two-component model and the difficulty-normalized review-credit shape, lives in the [PRD](./prd.md#reputation).
 
 ---
 
 ## Calibration
 
-Reviewer assignments include items the system already knows the answer to — drawn from the graph's own validated history and indistinguishable from real frontier work. Reviewers who fail calibration lose reputation; the calibration corpus grows as the graph grows.
+Reviewer assignments include items the system already knows the answer to — drawn from the graph's own validated history. They are intended to be indistinguishable from real frontier work to a reviewer evaluating one batch; defenses against patient adversaries observing many batches (rotation regime, sampling distribution) are part of the methodology and live in the [PRD](./prd.md#calibration-batches). Reviewers who fail calibration lose reputation; the calibration corpus grows as the graph grows.
 
 **Specific calibration items in active rotation are operationally private.** Published items get burned. Methodology is fully public; specific tuning is not.
 
@@ -64,7 +77,7 @@ This avoids the failure mode where bad sub-topics fragment effort.
 
 Most disputes resolve at the proposal level: redundant review, divergence-as-signal, parallel synthesis nodes for genuine disagreement. The cases that escalate:
 
-- **Bad-faith behavior** (sybil farms, coordinated reputation farming, persistent ungrounded citation): handled by curator review with documented action; specific moderation actions are logged but not all public.
+- **Bad-faith behavior** (sybil farms, coordinated reputation farming, persistent ungrounded citation): handled by curator review with documented action; specific moderation actions are logged in the tamper-evident audit log, with affected contributors notified of the action category and specific signals redacted only where exposure would aid evasion. Aggregate moderation reporting (counts and categories per period) is published.
 - **Governance disagreement** (a contributor or reviewer disagrees with how the regime itself works): handled through the governance-change process below, not through individual disputes.
 
 ---
@@ -73,7 +86,7 @@ Most disputes resolve at the proposal level: redundant review, divergence-as-sig
 
 Anchorage's governance is itself code. Changes to the governance regime — calibration ratios, reputation formulas, reviewer-assignment algorithms, sub-topic-creation rules — are made through pull requests against the protocol repository.
 
-Crucially: **every governance change is run against the adversary testbed before merging.** This is the project's continuous-integration story for governance. Wikipedia debates policy changes for years because it cannot test them; Anchorage tests them in an afternoon. Proposals that fail simulation against known attacks do not merge.
+Crucially: **every governance change is run against the adversary testbed before merging.** This is the project's continuous-integration story for governance. Wikipedia debates policy changes for years because it cannot test them; Anchorage tests them on a fast loop for the cheap-attack threat surface, with a slower deep loop for frontier-model adversaries. Proposals that fail simulation against known attacks do not merge. The threshold definitions for "passing" are themselves versioned and require multi-curator approval to loosen — see [PRD](./prd.md#continuous-integration).
 
 This is the load-bearing part of why the testbed is built first.
 
@@ -86,9 +99,11 @@ Public:
 - The protocol code.
 - The data model.
 - The write-path tools.
-- The reputation logic, including formulas.
+- The reputation logic, including formulas (individual numeric reputation values are private; eligibility tiers are public).
 - The reviewer-assignment methodology.
 - The criteria for sub-topic creation and curator action.
+- The curator-action audit log (selectively redacted — affected contributors see action category; specific signals redacted only where exposure aids evasion).
+- Aggregate moderation transparency reports (counts and categories per period).
 - All committed graph state on the public instance.
 
 Operationally private:

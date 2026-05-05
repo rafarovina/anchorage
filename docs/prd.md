@@ -26,7 +26,7 @@ Anchorage is one canonical service layer behind two client surfaces:
 - **Web UI** (`anchorage.science`): read-mostly human surface. Browse causes, sub-topics, graphs, frontiers, and manuscript projections. Calls the same canonical service layer.
 - **Service layer**: the trust boundary. Every mutation passes through verification, governance gates, and reputation updates here. Clients are untrusted regardless of identity.
 
-This is a deliberate architectural commitment, not an implementation note. Federation between Anchorage instances later is MCP-to-MCP. The testbed connects via the same MCP interface real clients use — *no stub APIs*. This makes "the contributor population is in-distribution for simulation" architecturally enforced rather than aspirational.
+This is a deliberate architectural commitment, not an implementation note. Federation between Anchorage instances later is MCP-to-MCP. The testbed connects via the same MCP interface real clients use — *no stub APIs*. The architectural commitment is what the testbed depends on; the broader claim that simulated populations cover the real contributor distribution is qualified in the [manifesto](./manifesto.md#testability-is-the-secret-weapon) and the [testbed coverage section](#what-the-testbed-does-not-cover).
 
 ---
 
@@ -50,7 +50,7 @@ Every node has:
 - `sub_topic_id` — the sub-topic this node belongs to
 - `kind` — one of:
   - `anchor` — external source (paper, dataset, definition). Has `external_ref` (PMID, DOI, URL) that must resolve.
-  - `excerpt` — tight claim tied to a specific anchor parent. Has a `quoted_span` field; the verification engine matches it against the resolved source. Excerpts cannot exist without a verified span.
+  - `excerpt` — tight claim tied to a specific anchor parent. Has a `quoted_span` field; the verification engine matches it against the resolved source. Excerpts cannot exist without a verified span. The `content` is the atomic claim; the `quoted_span` is the verbatim slice that anchors verification. They are not required to be identical — `content` may paraphrase to atomize a claim the span supports — but `content` must be an assertion the span supports under a charitable reading. The verification engine confirms the span resolves; the reviewer confirms `content` follows from it. Span verification is necessary but not sufficient: cherry-picking a true span out of context (negation-stripping, hedge-stripping) is a known attack and is part of the reviewer's responsibility to catch.
   - `synthesis` — explicit inferential step derived from multiple parents. The agent or contributor sets `kind=synthesis` when the content is not a straight excerpt.
   - `open_question` — scoped uncertainty with edges to what it depends on. Surfaces as a frontier item.
 - `content` — the claim text (single atomic claim per node)
@@ -63,15 +63,21 @@ The **active node rule** (matching Galleon's contract): a node is *inactive* if 
 
 ### Edges
 
-- `derives` — parent (support) → child (derived claim). Direction matches storage. Lineage walks backward along `derives` until it hits anchors.
-- `supersedes` — old → replacement. Marks the old node inactive.
-- `cross_link` — explicit reference between sub-topics within the same cause. Used sparingly to express that a claim in one sub-topic depends on or relates to a claim in another. Cross-links do not propagate `derives` lineage across sub-topic boundaries; they are annotations.
+- `derives` — parent (support) → child (derived claim). Direction matches storage. Lineage walks backward along `derives` until it hits anchors. `derives` parents must be `active` at the moment of acceptance: a child cannot be merged with a `staged` or `rejected` parent.
+- `supersedes` — old → replacement. Marks the old node inactive. The `to` end (the replacement) must be `active` at the time the supersedes is proposed. Supersedes cycles (A → B → C → A) are forbidden by the verification engine.
+- `cross_link` — explicit reference between sub-topics within the same cause. Used sparingly to express that a claim in one sub-topic relates to a claim in another. Cross-links are *navigation*, not *load-bearing structure*: they do not propagate `derives` lineage across sub-topic boundaries, and they cannot appear in the lineage chain a manuscript projection walks for credit or argument structure. If a projection in sub-topic A genuinely depends on a claim from sub-topic B, the corresponding excerpt or synthesis must be materialized as a node in A with its own `derives` chain. This closes the seam where cross-links could be smuggled `derives` that escape sub-topic-scoped review and credit.
 
 Other edge types are rejected. The minimal vocabulary is load-bearing: more edge types create more places for governance disputes without proportionally more expressive power.
+
+### Sub-topic relocation
+
+A node belongs to exactly one sub-topic, but scope envelopes overlap and contributors will sometimes propose nodes in the wrong place. A `propose_relocate` operation moves a node (and its sub-topic-internal edges) from one sub-topic to another within the same cause, subject to curator approval. Relocation is not a free action: it touches credit, review eligibility, and projection scope, all of which depend on which sub-topic a node lives in. Genuinely cross-relevant nodes use cross-links rather than relocation, with the constraint above (cross-links cannot be projection lineage).
 
 ### Manuscript projection
 
 A *projection* is a derived view of a sub-topic's graph plus editorial choices (section order, narrative voice, scope of inclusion). Projections are not a separate truth ledger — they are a function of (graph state, projection config). The graph is canonical; projections come and go.
+
+The *projection config* is itself a governance artifact, not a private editorial document. Changes to a projection config — what's in scope, section ordering, which nodes are emphasized — affect which nodes are load-bearing for argument structure and therefore which contributors get credit. Projection configs are version-controlled in the graph; changes to them route through the standard governance-change CI process; authorship disputes resolve as governance changes to the projection config rather than as private negotiations.
 
 ---
 
@@ -116,9 +122,9 @@ Tool surface is intentionally small. Each tool has tight typing, server-side val
 
 The verification engine is the security boundary. Every write tool routes through it.
 
-- **Anchor verification.** External references must resolve. PMIDs hit NCBI E-utilities; DOIs resolve via Crossref; URLs must return 200 with substantive content. The fetched content is cached; cache age affects re-verification.
-- **Span verification.** For excerpts, the `quoted_span` must be a substring of the fetched source (after light normalization for whitespace and quote-style). Failure rejects the proposal at write time, not at review time.
-- **Lineage validation.** `derives` edges must connect nodes within the same sub-topic. `cross_link` edges may cross sub-topics within the same cause. `derives` from a non-existent or rejected node fails.
+- **Anchor verification.** External references must resolve. PMIDs hit NCBI E-utilities; DOIs resolve via Crossref; URLs must return 200 with substantive content. Anchors are *content-addressed*: the hash of the fetched content is stored alongside the `external_ref`, and re-verification compares against the stored hash rather than only against a live fetch. URL-anchors are second-class — metadata-unstable and cloaking-prone — and may be subject to stricter regimes (or refused entirely in v0). When re-verification fails (retraction, content drift, host gone), the anchor moves to an `unresolvable` status and surfaces as a frontier item rather than silently rotting.
+- **Span verification.** For excerpts, the `quoted_span` must be a substring of the fetched source after normalization (whitespace, quote-style, and a small set of typographic equivalences specified in the verification spec, not left to "light normalization" hand-waving). Failure rejects the proposal at write time, not at review time. Span verification confirms the quote exists; it does not confirm the proposed `content` follows from it — that is the reviewer's job.
+- **Lineage validation.** `derives` edges must connect nodes within the same sub-topic; `cross_link` edges may cross sub-topics within the same cause. At acceptance, every `derives` parent must be `active` (not `staged`, `rejected`, or `superseded`); the `to` end of a `supersedes` must be `active` at proposal time; supersedes cycles are rejected. Cross-links cannot appear in the lineage chain a manuscript projection walks.
 - **Reputation gates.** Some operations require minimum reputation (per-(cause, sub-topic) or per-cause). Below the threshold, proposals land staged but are not advanced into the review queue without curator action. Specific thresholds are tuned in the testbed.
 - **Rate limits and abuse signals.** Per-identity rate limits on proposals; suspicious patterns (sudden burst of proposals, calibration-failure clustering) flag for curator review. Specific signals are operationally private.
 
@@ -140,15 +146,29 @@ The verification engine is the security boundary. Every write tool routes throug
 
 Reviewers are drawn from the eligible pool — contributors with sufficient per-(cause, sub-topic) reputation — by stratified random sampling. Stratification balances reviewer expertise (where measurable) and reduces collusion risk. Specific stratification weights are tuned in the testbed.
 
+Narrow sub-topics will sometimes have a sub-topic-rep pool too small to draw N reviewers from. The fallback ladder is fixed in design even though the thresholds are tuning:
+
+1. **Sub-topic-rep first.** Standard path. Reviewers with demonstrated work in this sub-topic.
+2. **Cause-rep with degraded-stratification flag.** When the sub-topic pool is exhausted, draw from cause-rep contributors and flag the proposal as "expertise-degraded" — visible to the contributor, factored into convergence-threshold logic (see below), and logged for periodic audit.
+3. **Curator escalation.** When even the cause-rep pool is insufficient or when prior steps have produced sustained divergence, escalate to curator review.
+
+At sub-topic launch, expertise stratification is degraded by construction (no history exists), and calibration items are drawn from the cause's validated history rather than from the sub-topic's. The doc states this explicitly so it is not mistaken for a vulnerability when reviewers notice it.
+
+Convergence and divergence thresholds are claim-class-aware: high-stakes claim classes (e.g., quantitative effect-size syntheses) draw larger pools and tighter convergence thresholds than low-stakes ones (e.g., terminological clarifications). Specific class definitions and threshold values are testbed-tuned; the *machinery* being class-aware is a design commitment.
+
+Divergence has a closure mechanism. Divergent proposals are routed to richer review or carried forward as parallel synthesis nodes / `open_question`, but not indefinitely: divergences without further evidence within a tunable window are archived (status `unresolved-archived`) rather than perpetually re-routed. This prevents the queue from accumulating reviewer-noise as if it were principled disagreement.
+
 ### Calibration batches
 
-Reviewer batches contain a mix of real proposals and calibration items. Calibration items are drawn from the graph's own validated history — proposals that survived multiple confirmations and have been stable. They are *indistinguishable* from real frontier work. Reviewers who fail calibration lose reputation; calibration corpus grows as the graph grows.
+Reviewer batches contain a mix of real proposals and calibration items. Calibration items are drawn from the graph's own validated history — proposals that survived multiple confirmations and have been stable. They are intended to be statistically indistinguishable from real frontier work in *the dimensions a reviewer can act on*: a reviewer evaluating one batch should not be able to tell which items are calibration. The harder question — whether a *patient* adversary observing many batches can build a classifier on re-use frequency, age, or other batch-level signatures — is real, and the methodology actively defends against it: calibration sampling is biased toward fresh-but-validated history, items rotate aggressively, and the sampling distribution itself is part of what the testbed evaluates as an attack surface.
 
-**Specific calibration items in active rotation are operationally private.** Published items are burned. Methodology is fully public; tuning is not.
+Reviewers who fail calibration lose reputation; the calibration corpus grows as the graph grows.
+
+**Specific calibration items in active rotation are operationally private.** Published items are burned. Methodology — including the rotation regime and the sampling-distribution defenses against batch-level correlation attacks — is fully public; specific tuning is not.
 
 ### Reviewer-as-staking
 
-Reviewers gain reputation when they accept proposals that survive and reject proposals that get rejected by other reviewers. They lose reputation when they accept proposals that are later reverted or fail calibration. This makes lazy rubber-stamp review costly without requiring reviewers to do more than they would already do well.
+Reviewers gain reputation when they accept proposals that survive and reject proposals that get rejected by other reviewers. They lose reputation when they accept proposals that are later reverted or fail calibration. This makes lazy rubber-stamp review costly without requiring reviewers to do more than they would already do well. The risk that staking selects against reviewers willing to engage hard syntheses is addressed by claim-difficulty-normalized review-credit (see [Reputation](#reputation)).
 
 ### Sub-topic creation
 
@@ -163,12 +183,30 @@ In Phase 3+: auto-discovery surfaces tractable scope envelopes from graph state;
 
 ---
 
+## Identity
+
+The identity model is a requirements sketch in v0; specific tech (OIDC providers, key formats, attestations) is a Phase 1 implementation choice, but the *contract* the rest of the design depends on is fixed here.
+
+- **Bounded identities-per-real-person.** Identity creation has a non-trivial cost — email verification at minimum, third-party OIDC (GitHub, ORCID, institutional SSO) preferred. The cost is tunable; the testbed sweeps it as a parameter. Zero-cost identities are not supported.
+- **Pseudonymity is supported; anonymity is not.** A contributor may operate under a stable pseudonym; the system retains a binding between the pseudonym and the underlying identity-establishing credentials (email, OIDC subject) that curators can use under documented escalation. The graph and the public surface show the pseudonym; the binding is private.
+- **Named credit on manuscript projections is opt-in.** Pseudonymous credit is allowed, but the project's recommendation is real-name credit for high-impact projections to retain academic legibility. Pseudonymous co-authorship is unusual and contributors should make that choice deliberately.
+- **Revocation.** Identities can be revoked (sybil farms, terms-of-service violations). Revocation invalidates future participation without rewriting graph history; revoked contributions remain in the graph with the revocation flagged.
+- **Cross-cause anti-abuse.** Public reputation is per-cause (see below). Anti-abuse signals (rate-limit accounting, identity-clustering for sybil detection) are *global per identity*, with documented governance and audit. The asymmetry — per-cause reputation, global anti-abuse — is intentional: sybil farms working two causes are more detectable than ones working one, and the cost of opacity here is small relative to the defense it enables.
+
+The identity model is the foundation that sybil-resistance, calibration integrity, and reputation accounting all rest on. None of them composes meaningfully without it.
+
+---
+
 ## Reputation
 
-- **Per-(cause, sub-topic).** Anchored at the cause level (the unit of belonging), refined by sub-topics actually worked in (the unit of expertise).
+Reputation is structured to resolve a real trilemma the design cannot wave away: *slow* decay rewards consistency (the design goal) but lets patient adversaries stockpile; *fast* decay neutralizes stockpiles but disenfranchises episodic experts (the part-time clinician is exactly the contributor we want); *review-as-staking* punishes lazy review but selects against accepting hard syntheses (which are riskier to stand behind). Acknowledging this directly:
+
+- **Two-component reputation.** A *demonstrated-competence* component, slow-decay, gates eligibility tiers (who is in the reviewer pool at all). A *recent-activity* component, fast-decay, gates assignment (who is drawn for a given proposal). A patient adversary can stockpile competence but must remain currently active to be assigned — and visible activity is detectable.
+- **Per-(cause, sub-topic).** Anchored at the cause level (the unit of belonging), refined by sub-topics actually worked in (the unit of expertise). Cause-level reputation gets a contributor in the door to *propose* in any sub-topic; review-eligibility in a contested sub-topic requires demonstrated work *in that sub-topic*. This closes the rep-laundering path where easy-sub-topic credibility is parlayed into reviewer authority over contested ones.
 - **Earned through confirmed contributions and accurate reviews.** Both contributing nodes that survive *and* reviewing accurately count.
-- **Lost through reverted contributions and inaccurate reviews.** Supersedes and rejected calibration items both decrease reputation.
-- **Slow-moving, with decay.** Tuned to reward consistency, not bursts. Inactive reputation decays over time.
+- **Lost through reverted contributions and inaccurate reviews.** Supersedes and rejected calibration items both decrease reputation. Self-supersedes (a contributor superseding their own node) do not count toward survivorship — only supersedes by other contributors do.
+- **Review-credit normalized by claim difficulty.** Without normalization, the regime selects for reviewers who accept easy proposals. Difficulty proxies — review effort, prior divergence, sub-topic frontier-distance — weight review-credit so that engaging hard syntheses is not dominated by rubber-stamping easy ones.
+- **Eligibility tiers public; numeric reputation private.** Contributors can see what tier they are in (and what gates the next tier); raw numbers are not leaderboards. Reviewers receive batch-level performance feedback after-the-fact, not in real time.
 - **Non-transferable, non-monetizable.** Reputation is a coordination signal, not a token.
 - **Specific formulas tuned in testbed.** Initial values are chosen for testbed simulation; production values are confirmed against attack-success-rate measurements.
 
@@ -185,7 +223,7 @@ The basic shape of the credit function:
 - **Load-bearing weighting.** Nodes whose removal would break a projection chain count more than peripheral nodes.
 - **Review weighting.** Reviewers who voted correctly accrue partial credit, weighted lower than proposers.
 
-Credit is **deterministic given graph state and projection config**. It is not negotiated in a meeting. Authorship disputes route to (a) re-running the credit function with corrected projection config, or (b) governance change to the credit function itself, which goes through the standard governance-change CI process.
+Credit is **deterministic given graph state and projection config**. It is not negotiated in a meeting. Authorship disputes route to (a) a versioned change to the projection config, evaluated by the same governance-change CI as any other governance change, or (b) a governance change to the credit function itself, also CI-evaluated. Both paths are public and auditable. Projection configs are not a back-channel.
 
 Specific weights are deferred to the testbed.
 
@@ -212,14 +250,27 @@ The testbed exercises the regime against the following synthetic contributor pop
 - **Hallucinator.** High-temperature model with no grounding discipline. Should be caught at the verification engine (span mismatch, unresolved citations) before review.
 - **Strategic adversary.** Hidden-objective model — instructed to bias the graph toward outcome X while passing calibration. Tests whether redundant peer review and reputation gates close the attack surface.
 - **Patient adversary.** Strategic adversary with a long horizon — builds reputation honestly for months before drift attempts. Tests whether per-(cause, sub-topic) reputation tracking and review-as-staking prevent slow drift.
-- **Sybil farm.** One operator running many low-rep identities. Tests whether identity-binding and rate limits prevent flood attacks.
-- **Coalition.** Multiple identities coordinating reviews on each other's proposals. Tests whether reviewer-assignment stratification and calibration random-sampling defeat coordination.
+- **Sybil farm.** One operator running many identities at the per-identity cost set in the [identity model](#identity). Tests whether identity-binding, rate limits, and global anti-abuse signals prevent flood attacks.
+- **Coalition.** Multiple identities coordinating reviews on each other's proposals. Tests whether reviewer-assignment stratification, calibration random-sampling, and the collusion-detection sample-size floor defeat coordination — and how the regime degrades on small sub-topics where the floor isn't reached.
 
 ### Continuous integration
 
 Every governance change — calibration ratio, reputation formula, reviewer-assignment algorithm, sub-topic-creation rule, credit-function weight — runs against the adversary suite before merging. Proposals that fail simulation against known attacks do not merge.
 
-This is the core load-bearing claim of the project. Wikipedia debates policy changes for years because it cannot test them; Anchorage tests them in an afternoon. That tempo difference compounds.
+The CI envelope has two tiers. A *fast loop* (cheap simulated populations, large numbers, low compute) runs on every governance-change PR. A *deep loop* (expensive populations including frontier-model adversaries, smaller numbers, higher compute) runs on a slower cadence and on changes that the fast loop flags as borderline. The honest framing is "a year of patient adversarial behavior in an hour" applies to the fast loop's cheap populations; the deep loop is where frontier-model patient adversaries live, and that loop is genuinely expensive.
+
+Threshold definitions ("what counts as passing") are themselves versioned. Threshold changes go through the same CI process; threshold-loosening proposals require multi-curator approval and are publicly logged. The testbed protects against the simulated attacks; the threshold-versioning regime protects the testbed from being defeated by changing the meaning of "pass."
+
+CI fails-shut: if the testbed infrastructure or model APIs are unavailable, governance changes do not merge. Liveness is sacrificed for safety. This is a deliberate choice and is acknowledged.
+
+### What the testbed does *not* cover
+
+- **Sophisticated human adversaries with out-of-band coordination.** State actors, well-funded interest groups, attackers willing to coordinate by phone, and attackers exerting political pressure on identifiable curators are not simulated. The residual risk is met by non-simulation defenses: curator vigilance, audit log, post-hoc forensics, and federation as an exit.
+- **Senior expert hand-prose contributions.** Models do not reproduce these well. The simulation under-approximates the friction the regime imposes on them. Worth measuring against real contributors as soon as Phase 2 begins.
+- **Phase 3+ failure modes.** Cross-cause reputation transfer, federation-induced collusion, multi-instance state synchronization. These are out-of-scope for Phase 1 testbed by design and gain testbed coverage when their phases open.
+- **Novel attacks not yet in the adversary suite.** Passing the testbed is necessary, not sufficient. Continuous addition of new adversary archetypes is part of the testbed's maintenance cost.
+
+This is the core load-bearing claim of the project, stated honestly. Wikipedia debates policy changes for years because it cannot test them; Anchorage tests them in an afternoon for the threat classes the testbed covers, and is honest about the threat classes it does not.
 
 ---
 

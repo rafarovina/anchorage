@@ -15,8 +15,8 @@ The roadmap is a living document. Phases will move; some will split or merge. Wh
 - [README.md](./README.md) — elevator pitch, mental model, status.
 - [docs/manifesto.md](./docs/manifesto.md) — why this exists, why now, why this shape.
 - [docs/governance.md](./docs/governance.md) — contribution norms, review responsibilities (skeleton; expanded in Phase 0.1).
-- `docs/prd.md` — technical north star: data model, governance machinery, calibration, credit, adversary testbed (TBD).
-- `docs/seed-topic.md` — first cause for the public instance, starter sub-topics, and rationale (TBD).
+- [docs/prd.md](./docs/prd.md) — technical north star: data model, governance machinery, calibration, credit, adversary testbed.
+- [docs/seed-topic.md](./docs/seed-topic.md) — first cause for the public instance, starter sub-topics, and rationale.
 
 **Exit criterion:** the docs survive their first serious adversarial review by an outside expert.
 

@@ -38,7 +38,7 @@ Two things changed at once.
 
 These are the same problem. A system that's robust to weak honest contributors is most of the way to being robust against strategic adversaries — both push the same defenses (verifiable anchors, redundant review, calibration, staked reputation, simulation testing) into the design from day one.
 
-Anchorage is a bet that **a system small enough to test exhaustively against a simulated adversarial population is large enough to make real cooperative research happen on top of it.** The unique technical asset is that the contributor population is in-distribution for simulation: every governance change, every parameter, every defense can be evaluated against the same population it will face in production, before a single human contributor signs up.
+Anchorage is a bet that **a system small enough to test exhaustively against a simulated adversarial population is large enough to make real cooperative research happen on top of it.** The unique technical asset is that a meaningful slice of the contributor population — the cheap-attack threat surface — is in-distribution for simulation: every governance change can be evaluated against simulated populations before it ships, with the residual classes (sophisticated human adversaries, senior expert hand-prose) addressed through non-simulation defenses. The [manifesto](./docs/manifesto.md#testability-is-the-secret-weapon) is honest about what the testbed does and does not cover.
 
 ## What's open
 
