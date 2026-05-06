@@ -1,0 +1,24 @@
+{
+  "name": "@anchorage/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0",
+  "description": "Anchorage protocol contracts: zod schemas and inferred types for nodes, edges, proposals, assignments, identity, and the MCP tool surface.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  }
+}

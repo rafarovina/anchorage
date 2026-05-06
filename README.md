@@ -68,9 +68,7 @@ No tokens. No marketplace. No paid tier. Reputation and credit are the only curr
 
 ## Status
 
-Design phase. No code yet.
-
-This repository currently contains the design and governance documents. Code, simulation testbed, and the first public instance follow once the design is stable enough to build from. Track [ROADMAP.md](./ROADMAP.md) for phasing.
+Concurrent Phase 0 + Phase 1. Design docs settled enough to scaffold the testbed; the two now co-evolve under a docs-never-drift discipline. Initial monorepo scaffold landed (`@anchorage/contracts`, `@anchorage/server`, `@anchorage/testbed`); protocol contracts and a first synthetic-contributor loop are next. Track [ROADMAP.md](./ROADMAP.md) for phasing.
 
 ## Documents
 

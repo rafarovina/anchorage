@@ -1,0 +1,28 @@
+{
+  "name": "anchorage",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0",
+  "description": "Anchorage protocol monorepo — contracts, server, and adversary testbed.",
+  "packageManager": "pnpm@10.33.3",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "test": "pnpm -r run test",
+    "lint": "biome check .",
+    "format": "biome format --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["@biomejs/biome", "esbuild"]
+  }
+}

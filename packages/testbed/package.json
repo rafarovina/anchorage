@@ -1,0 +1,26 @@
+{
+  "name": "@anchorage/testbed",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0",
+  "description": "Anchorage adversary testbed: synthetic contributor archetypes and the harness that drives them as MCP clients. Depends only on @anchorage/contracts — talks to the server over MCP, like any real client.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@anchorage/contracts": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.0.4"
+  }
+}

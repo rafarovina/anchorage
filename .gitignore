@@ -13,3 +13,10 @@ Thumbs.db
 .env
 .env.local
 *.local
+
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+.vite/
