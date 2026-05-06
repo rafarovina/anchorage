@@ -9,6 +9,7 @@ import {
   type DerivesEdge,
   type Edge,
   type ExcerptNode,
+  type FrontierItem,
   type Identity,
   type IdentityId,
   type Node,
@@ -30,6 +31,8 @@ import {
   type ProposeSupersedesOutput,
   ProposeSynthesisInput,
   type ProposeSynthesisOutput,
+  QueryFrontierInput,
+  type QueryFrontierOutput,
   type ReviewVote,
   SetCapacityInput,
   type SetCapacityOutput,
@@ -91,6 +94,21 @@ interface MaterializationResult {
   edges: readonly Edge[];
   nodeUpdates: readonly Node[];
   subTopicCreates: readonly SubTopic[];
+}
+
+// Stable tiebreaker for frontier ordering when priorities tie. Each
+// kind carries a different id-bearing field; we project onto a single
+// string for deterministic sort.
+function frontierTiebreakerKey(item: FrontierItem): string {
+  switch (item.kind) {
+    case 'orphan_anchor':
+    case 'unresolvable_anchor':
+      return `${item.kind}:${item.anchor_id}`;
+    case 'needs_review':
+      return `${item.kind}:${item.proposal_id}`;
+    case 'needs_synthesis':
+      return `${item.kind}:${item.parent_ids.join(',')}`;
+  }
 }
 
 // Server is the trust boundary. All mutation goes through it. The
@@ -188,6 +206,139 @@ export class Server {
       );
     }
     return home.cause_id;
+  }
+
+  // Derive frontier items from current graph state. Frontier items
+  // are *not* stored — they are projections over the existing nodes,
+  // edges, and proposals. This keeps the frontier consistent with the
+  // graph by construction: a state change that closes a gap (an
+  // excerpt landing on an orphan anchor; a review vote arriving on a
+  // staged proposal) makes the frontier item disappear on the next
+  // call without bookkeeping. Used by `query_frontier` today and by
+  // `request_assignment` when that lands.
+  //
+  // v0 covers three of the four FrontierKind variants:
+  //
+  //   - `orphan_anchor`         — active anchor with no active derives
+  //                               child edge.
+  //   - `unresolvable_anchor`   — anchor whose status is unresolvable
+  //                               (PRD §Verification engine).
+  //   - `needs_review`          — proposal in `staged` status whose
+  //                               kind admits review-pool review.
+  //                               Curator-only kinds (`sub_topic`,
+  //                               `change_of_home`) are excluded.
+  //
+  // `needs_synthesis` is deferred — there is no testbed-validated
+  // heuristic for "a synthesis would close a visible gap" yet, and
+  // shipping a guess would just bias the simulator. v1 introduces it
+  // alongside the closure-distance metric.
+  //
+  // Priorities are coarse v0 hints, not contracts about scale: review
+  // queue clearing is highest, broken sources next, productive-but-
+  // not-blocking orphans lowest. Real ordering is testbed-tuned and
+  // lives in the assignment-selection layer, not here.
+  private deriveFrontier(filters: {
+    cause_id?: CauseId;
+    sub_topic_id?: SubTopicId;
+    frontier_kind?: FrontierItem['kind'];
+  }): FrontierItem[] {
+    const items: FrontierItem[] = [];
+
+    // Build the set of node ids that are the `from` end of an active
+    // derives edge — used to identify orphan anchors. Membership in
+    // this set means at least one excerpt has landed.
+    const hasDerivesChild = new Set<NodeId>();
+    for (const e of this.store.edges.values()) {
+      if (e.kind === 'derives' && e.status === 'active') {
+        hasDerivesChild.add(e.from);
+      }
+    }
+
+    for (const node of this.store.nodes.values()) {
+      if (node.kind !== 'anchor') continue;
+      const home = this.store.subTopics.get(node.home_sub_topic_id);
+      if (!home) continue;
+      if (node.status === 'active' && !hasDerivesChild.has(node.id)) {
+        items.push({
+          kind: 'orphan_anchor',
+          cause_id: home.cause_id,
+          sub_topic_id: node.home_sub_topic_id,
+          anchor_id: node.id,
+          priority: 5,
+        });
+      } else if (node.status === 'unresolvable') {
+        items.push({
+          kind: 'unresolvable_anchor',
+          cause_id: home.cause_id,
+          sub_topic_id: node.home_sub_topic_id,
+          anchor_id: node.id,
+          priority: 8,
+        });
+      }
+    }
+
+    for (const p of this.store.proposals.values()) {
+      if (p.status !== 'staged') continue;
+      const located = this.locateProposalForReview(p);
+      if (!located) continue;
+      items.push({
+        kind: 'needs_review',
+        cause_id: located.cause_id,
+        sub_topic_id: located.sub_topic_id,
+        proposal_id: p.id,
+        priority: 10,
+      });
+    }
+
+    const filtered = items.filter((it) => {
+      if (filters.cause_id && it.cause_id !== filters.cause_id) return false;
+      if (filters.sub_topic_id && it.sub_topic_id !== filters.sub_topic_id) return false;
+      if (filters.frontier_kind && it.kind !== filters.frontier_kind) return false;
+      return true;
+    });
+
+    // Stable order: priority descending, then ids alphabetical for
+    // determinism. The testbed depends on stable ordering for replay
+    // — randomness in selection lives at the assignment layer, not
+    // the frontier query.
+    filtered.sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return frontierTiebreakerKey(a).localeCompare(frontierTiebreakerKey(b));
+    });
+    return filtered;
+  }
+
+  // Locate the (cause, sub-topic) for review-routing of a staged
+  // proposal. Curator-only kinds (`sub_topic`, `change_of_home`)
+  // return null — they are not surfaced to the reviewer pool.
+  // Membership routes to the *target* sub-topic per PRD line 130.
+  // Supersedes routes to the from-node's home (the home owns the node
+  // being deactivated).
+  private locateProposalForReview(
+    p: Proposal,
+  ): { cause_id: CauseId; sub_topic_id: SubTopicId } | null {
+    switch (p.payload.kind) {
+      case 'anchor':
+      case 'excerpt':
+      case 'synthesis':
+      case 'open_question':
+        return { cause_id: p.payload.cause_id, sub_topic_id: p.payload.home_sub_topic_id };
+      case 'membership': {
+        const target = this.store.subTopics.get(p.payload.sub_topic_id);
+        if (!target) return null;
+        return { cause_id: target.cause_id, sub_topic_id: p.payload.sub_topic_id };
+      }
+      case 'supersedes': {
+        const fromNode = this.store.nodes.get(p.payload.from_node_id);
+        if (!fromNode) return null;
+        const home = this.store.subTopics.get(fromNode.home_sub_topic_id);
+        if (!home) return null;
+        return { cause_id: home.cause_id, sub_topic_id: fromNode.home_sub_topic_id };
+      }
+      case 'sub_topic':
+      case 'change_of_home':
+        return null;
+    }
   }
 
   // Reject supersedes cycles (PRD §Edges: "Supersedes cycles A→B→C→A are
@@ -685,6 +836,28 @@ export class Server {
       };
       this.store.proposals.set(proposal.id, proposal);
       return { proposal_id: proposal.id };
+    },
+
+    // PRD §Read-path tools and resources line 146: query_frontier
+    // returns an ordered list of frontier items (work to be done),
+    // optionally filtered by cause, sub-topic, or kind. The frontier
+    // is derived from current graph state — see deriveFrontier — so
+    // its consistency with the graph is by-construction. Callers must
+    // be authenticated; the result is the same for everyone, but the
+    // auth check keeps the tool accountable to rate-limit / abuse-
+    // signal infrastructure that lives at the caller layer.
+    queryFrontier: async (
+      caller: Caller,
+      input: QueryFrontierInput,
+    ): Promise<QueryFrontierOutput> => {
+      const parsed = QueryFrontierInput.parse(input);
+      resolveCaller(this.store, caller);
+      const items = this.deriveFrontier({
+        ...(parsed.cause_id !== undefined ? { cause_id: parsed.cause_id } : {}),
+        ...(parsed.sub_topic_id !== undefined ? { sub_topic_id: parsed.sub_topic_id } : {}),
+        ...(parsed.frontier_kind !== undefined ? { frontier_kind: parsed.frontier_kind } : {}),
+      });
+      return { items };
     },
 
     // PRD §cast_review_vote (line 133): reviewer records a vote with

@@ -748,6 +748,158 @@ describe('tools.proposeSubTopic', () => {
   });
 });
 
+describe('tools.queryFrontier', () => {
+  it('surfaces an active anchor with no excerpt as an orphan_anchor item', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'lone',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+
+    const { items } = await f.server.tools.queryFrontier(f.caller, {});
+    const orphans = items.filter((i) => i.kind === 'orphan_anchor');
+    expect(orphans).toHaveLength(1);
+  });
+
+  it('drops an anchor from the frontier once an excerpt derives from it', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'parent',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+
+    const e = await f.server.tools.proposeExcerpt(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_anchor_id: aId,
+      content: 'ex',
+      quoted_span: { text: 'ex', offset: 0 },
+    });
+    f.server.curator.acceptProposal(e.proposal_id);
+
+    const { items } = await f.server.tools.queryFrontier(f.caller, {});
+    expect(items.find((i) => i.kind === 'orphan_anchor')).toBeUndefined();
+  });
+
+  it('surfaces a staged proposal as a needs_review item routed to its home', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const { items } = await f.server.tools.queryFrontier(f.caller, {});
+    const review = items.find((i) => i.kind === 'needs_review');
+    if (review?.kind !== 'needs_review') throw new Error('expected needs_review');
+    expect(review.proposal_id).toBe(proposal_id);
+    expect(review.sub_topic_id).toBe(f.sub_topic_id);
+  });
+
+  it('routes a membership proposal to the target sub-topic', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+    const { proposal_id } = await f.server.tools.proposeMembership(f.caller, {
+      node_id: aId,
+      sub_topic_id: f.other_sub_topic_id,
+    });
+    const { items } = await f.server.tools.queryFrontier(f.caller, {
+      sub_topic_id: f.other_sub_topic_id,
+      frontier_kind: 'needs_review',
+    });
+    const review = items.find((i) => i.kind === 'needs_review');
+    if (review?.kind !== 'needs_review') throw new Error('expected needs_review');
+    expect(review.proposal_id).toBe(proposal_id);
+    expect(review.sub_topic_id).toBe(f.other_sub_topic_id);
+  });
+
+  it('excludes curator-only kinds (sub_topic, change_of_home) from the frontier', async () => {
+    const f = fixture();
+    await f.server.tools.proposeSubTopic(f.caller, {
+      cause_id: f.cause_id,
+      name: 'lynch',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+    await f.server.tools.proposeChangeOfHome(f.caller, {
+      node_id: aId,
+      new_home_sub_topic_id: f.other_sub_topic_id,
+      rationale: 'x',
+    });
+    const { items } = await f.server.tools.queryFrontier(f.caller, {
+      frontier_kind: 'needs_review',
+    });
+    // Two staged proposals exist (sub_topic + change_of_home) but
+    // neither belongs in the reviewer-pool frontier.
+    expect(items).toHaveLength(0);
+  });
+
+  it('surfaces unresolvable anchors with a higher priority than orphans', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'live',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const liveId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!liveId) throw new Error('expected anchor');
+    const b = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'broken',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const brokenId = f.server.curator.acceptProposal(b.proposal_id).node_id;
+    if (!brokenId) throw new Error('expected anchor');
+    // Simulate verification failure on broken's source.
+    const broken = f.server.store.nodes.get(brokenId);
+    if (!broken) throw new Error('broken missing');
+    f.server.store.nodes.set(brokenId, { ...broken, status: 'unresolvable' });
+
+    const { items } = await f.server.tools.queryFrontier(f.caller, {});
+    const indexes = {
+      unresolvable: items.findIndex((i) => i.kind === 'unresolvable_anchor'),
+      orphan: items.findIndex((i) => i.kind === 'orphan_anchor'),
+    };
+    expect(indexes.unresolvable).toBeGreaterThanOrEqual(0);
+    expect(indexes.orphan).toBeGreaterThan(indexes.unresolvable);
+  });
+
+  it('rejects an unauthenticated caller', async () => {
+    const f = fixture();
+    await expect(
+      f.server.tools.queryFrontier(
+        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
+        { identity_id: 'idn_bogus' as any },
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'unauthorized' });
+  });
+});
+
 describe('tools.castReviewVote', () => {
   // Two-identity fixture: alice proposes, bob reviews. The base
   // fixture only mints alice; bob is a second identity for the
