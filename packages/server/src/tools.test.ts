@@ -466,3 +466,90 @@ describe('tools.proposeSupersedes', () => {
     ).rejects.toMatchObject({ code: 'invalid_input' });
   });
 });
+
+describe('tools.proposeMembership', () => {
+  async function withAnchor(f: ReturnType<typeof fixture>) {
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'msi-high crc definition',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const id = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!id) throw new Error('expected anchor');
+    return id;
+  }
+
+  it('stages a membership proposal for an active node and target sub-topic', async () => {
+    const f = fixture();
+    const node_id = await withAnchor(f);
+    const { proposal_id } = await f.server.tools.proposeMembership(f.caller, {
+      node_id,
+      sub_topic_id: f.other_sub_topic_id,
+    });
+    const p = f.server.store.proposals.get(proposal_id);
+    if (p?.payload.kind !== 'membership') throw new Error('expected membership payload');
+    expect(p.payload.node_id).toBe(node_id);
+    expect(p.payload.sub_topic_id).toBe(f.other_sub_topic_id);
+    expect(p.status).toBe('staged');
+  });
+
+  it('rejects a target sub-topic in a different cause', async () => {
+    const f = fixture();
+    const node_id = await withAnchor(f);
+    const otherCause = f.server.bootstrap.createCause({ name: 'AMR', description: 'x' });
+    const otherSt = f.server.bootstrap.seedSubTopic({
+      cause_id: otherCause.id,
+      name: 'x',
+      description: 'x',
+      scope_query: 'x',
+    });
+    await expect(
+      f.server.tools.proposeMembership(f.caller, {
+        node_id,
+        sub_topic_id: otherSt.id,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it("rejects re-claiming the node's own home sub-topic", async () => {
+    const f = fixture();
+    const node_id = await withAnchor(f);
+    await expect(
+      f.server.tools.proposeMembership(f.caller, {
+        node_id,
+        sub_topic_id: f.sub_topic_id,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('rejects a duplicate membership claim', async () => {
+    const f = fixture();
+    const node_id = await withAnchor(f);
+    const { proposal_id } = await f.server.tools.proposeMembership(f.caller, {
+      node_id,
+      sub_topic_id: f.other_sub_topic_id,
+    });
+    f.server.curator.acceptProposal(proposal_id);
+    await expect(
+      f.server.tools.proposeMembership(f.caller, {
+        node_id,
+        sub_topic_id: f.other_sub_topic_id,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('rejects when the node is not active', async () => {
+    const f = fixture();
+    const node_id = await withAnchor(f);
+    const node = f.server.store.nodes.get(node_id);
+    if (!node) throw new Error('node missing');
+    f.server.store.nodes.set(node_id, { ...node, status: 'superseded' });
+    await expect(
+      f.server.tools.proposeMembership(f.caller, {
+        node_id,
+        sub_topic_id: f.other_sub_topic_id,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+});

@@ -17,6 +17,8 @@ import {
   type ProposeAnchorOutput,
   ProposeExcerptInput,
   type ProposeExcerptOutput,
+  ProposeMembershipInput,
+  type ProposeMembershipOutput,
   ProposeSupersedesInput,
   type ProposeSupersedesOutput,
   ProposeSynthesisInput,
@@ -489,6 +491,69 @@ export class Server {
       this.store.proposals.set(proposal.id, proposal);
       return { proposal_id: proposal.id };
     },
+
+    // PRD §Scope membership: propose_membership stages a claim that an
+    // existing node is in scope for an additional sub-topic in the same
+    // cause. Membership is what lets a single node serve multiple sub-
+    // topics without duplication, forking supersedes chains, or
+    // smuggling lineage (PRD line 82). Reviewed by the *target* sub-
+    // topic's reviewer pool — that's the pool with the expertise to
+    // judge the scope claim — but reviewer assignment lives downstream
+    // of this tool.
+    proposeMembership: async (
+      caller: Caller,
+      input: ProposeMembershipInput,
+    ): Promise<ProposeMembershipOutput> => {
+      const parsed = ProposeMembershipInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+
+      const node = this.store.nodes.get(parsed.node_id);
+      if (!node) {
+        throw new ServerError('not_found', `node not found: ${parsed.node_id}`);
+      }
+      if (node.status !== 'active') {
+        throw new ServerError('invalid_state', `node ${node.id} is ${node.status}`);
+      }
+      const causeId = this.causeOfNode(node);
+      // Membership target must be in the same cause: cross-cause scope
+      // claims would smuggle lineage past the cause boundary, which the
+      // multi-scale graph deliberately enforces.
+      this.requireActiveSubTopicInCause(parsed.sub_topic_id, causeId, 'target');
+
+      // Redundancy checks. A node trivially serves its home sub-topic;
+      // re-claiming an existing scope membership creates a duplicate
+      // proposal that contributes nothing. Both are caught here so the
+      // contributor gets a synchronous, specific error rather than a
+      // late acceptance failure or a silent no-op.
+      if (node.home_sub_topic_id === parsed.sub_topic_id) {
+        throw new ServerError(
+          'invalid_input',
+          `node ${node.id} is already homed in sub-topic ${parsed.sub_topic_id}`,
+        );
+      }
+      if (node.scope_memberships.includes(parsed.sub_topic_id)) {
+        throw new ServerError(
+          'invalid_input',
+          `node ${node.id} already has membership in sub-topic ${parsed.sub_topic_id}`,
+        );
+      }
+
+      const now = this.clock.now();
+      const proposal: Proposal = {
+        id: this.idGen.proposalId(),
+        proposer_id: identity.id,
+        status: 'staged',
+        payload: {
+          kind: 'membership',
+          node_id: node.id,
+          sub_topic_id: parsed.sub_topic_id,
+        },
+        created_at: now,
+        updated_at: now,
+      };
+      this.store.proposals.set(proposal.id, proposal);
+      return { proposal_id: proposal.id };
+    },
   };
 
   readonly curator = {
@@ -683,6 +748,46 @@ export class Server {
       // to know whether a node is active.
       const updated: Node = { ...fromNode, status: 'superseded', updated_at: now };
       return { node: null, edges: [edge], nodeUpdates: [updated] };
+    }
+    if (proposal.payload.kind === 'membership') {
+      // Re-check the node and target sub-topic at acceptance: either
+      // could have moved out of `active` between propose and accept,
+      // and the node could have gained the membership through a
+      // concurrent acceptance — in which case re-applying it would
+      // be a no-op but the duplicate-membership invariant still has
+      // to hold.
+      const node = this.store.nodes.get(proposal.payload.node_id);
+      if (!node || node.status !== 'active') {
+        throw new ServerError(
+          'invalid_state',
+          `node ${proposal.payload.node_id} is not active at acceptance`,
+        );
+      }
+      const target = this.store.subTopics.get(proposal.payload.sub_topic_id);
+      if (!target || target.status !== 'active') {
+        throw new ServerError(
+          'invalid_state',
+          `target sub-topic ${proposal.payload.sub_topic_id} is not active at acceptance`,
+        );
+      }
+      if (node.home_sub_topic_id === proposal.payload.sub_topic_id) {
+        throw new ServerError(
+          'invalid_state',
+          `node ${node.id} is now homed in sub-topic ${proposal.payload.sub_topic_id}`,
+        );
+      }
+      if (node.scope_memberships.includes(proposal.payload.sub_topic_id)) {
+        throw new ServerError(
+          'invalid_state',
+          `node ${node.id} already has membership in sub-topic ${proposal.payload.sub_topic_id}`,
+        );
+      }
+      const updated: Node = {
+        ...node,
+        scope_memberships: [...node.scope_memberships, proposal.payload.sub_topic_id],
+        updated_at: now,
+      };
+      return { node: null, edges: [], nodeUpdates: [updated] };
     }
     throw new ServerError(
       'invalid_state',

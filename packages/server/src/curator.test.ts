@@ -249,6 +249,66 @@ describe('curator.acceptProposal', () => {
     expect(() => f.server.curator.acceptProposal(proposal_id)).toThrow(ServerError);
   });
 
+  it('materializes a membership by appending to scope_memberships', async () => {
+    const f = fixture();
+    const otherSt = f.server.bootstrap.seedSubTopic({
+      cause_id: f.cause_id,
+      name: 'lynch-surveillance',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'msi-high crc definition',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+
+    const { proposal_id } = await f.server.tools.proposeMembership(f.caller, {
+      node_id: aId,
+      sub_topic_id: otherSt.id,
+    });
+    const result = f.server.curator.acceptProposal(proposal_id);
+    expect(result.node_id).toBeUndefined();
+
+    const updated = f.server.store.nodes.get(aId);
+    expect(updated?.scope_memberships).toEqual([otherSt.id]);
+    expect(updated?.home_sub_topic_id).toBe(f.sub_topic_id);
+    expect(updated?.status).toBe('active');
+    // No edges are created — memberships are a node property, not an
+    // edge type (PRD §Edges line 76).
+    expect(f.server.store.edges.size).toBe(0);
+  });
+
+  it('rejects accepting a membership whose node has been superseded between propose and accept', async () => {
+    const f = fixture();
+    const otherSt = f.server.bootstrap.seedSubTopic({
+      cause_id: f.cause_id,
+      name: 'lynch-surveillance',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+
+    const { proposal_id } = await f.server.tools.proposeMembership(f.caller, {
+      node_id: aId,
+      sub_topic_id: otherSt.id,
+    });
+    const node = f.server.store.nodes.get(aId);
+    if (!node) throw new Error('node missing');
+    f.server.store.nodes.set(aId, { ...node, status: 'superseded' });
+    expect(() => f.server.curator.acceptProposal(proposal_id)).toThrow(ServerError);
+  });
+
   it('rejects an unknown proposal id', () => {
     const f = fixture();
     try {
