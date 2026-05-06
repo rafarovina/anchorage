@@ -141,3 +141,75 @@ describe('tools.proposeAnchor', () => {
     ).rejects.toBeInstanceOf(ServerError);
   });
 });
+
+describe('tools.proposeExcerpt', () => {
+  async function withAcceptedAnchor(f: ReturnType<typeof fixture>) {
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'parent paper',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const { node_id } = f.server.curator.acceptProposal(proposal_id);
+    if (!node_id) throw new Error('expected anchor node');
+    return node_id;
+  }
+
+  it('stages an excerpt proposal under an active anchor', async () => {
+    const f = fixture();
+    const anchor_id = await withAcceptedAnchor(f);
+    const { proposal_id } = await f.server.tools.proposeExcerpt(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_anchor_id: anchor_id,
+      content: 'In stage II resected CRC, ctDNA-positivity at week 4...',
+      quoted_span: { text: 'ctDNA-positivity at week 4', offset: 42 },
+    });
+    const p = f.server.store.proposals.get(proposal_id);
+    if (p?.payload.kind !== 'excerpt') throw new Error('unexpected payload');
+    expect(p.payload.parent_anchor_id).toBe(anchor_id);
+    expect(p.payload.quoted_span).toEqual({ text: 'ctDNA-positivity at week 4', offset: 42 });
+    expect(p.status).toBe('staged');
+  });
+
+  it('rejects an excerpt against an unknown parent', async () => {
+    const f = fixture();
+    await expect(
+      f.server.tools.proposeExcerpt(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
+        parent_anchor_id: 'nod_missing' as any,
+        content: 'x',
+        quoted_span: { text: 'x', offset: 0 },
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('rejects an excerpt whose parent is staged (not yet a node)', async () => {
+    const f = fixture();
+    const { proposal_id: anchor_proposal } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'parent paper',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    // No accept call: anchor exists only as a staged proposal.
+    expect(anchor_proposal).toBeDefined();
+    // Excerpt asserts a parent that has not been materialized as a
+    // node yet. The parent_anchor_id must be a NodeId; without
+    // materialization there's no NodeId to point at, so the test
+    // confirms the "must reference a real, active anchor node" rule
+    // by passing a node id that doesn't exist.
+    await expect(
+      f.server.tools.proposeExcerpt(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
+        parent_anchor_id: 'nod_t_0001' as any,
+        content: 'x',
+        quoted_span: { text: 'x', offset: 0 },
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+});

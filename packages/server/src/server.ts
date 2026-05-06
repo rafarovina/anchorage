@@ -3,13 +3,18 @@ import {
   type AnchorNode,
   type Cause,
   type CauseId,
+  type DerivesEdge,
+  type ExcerptNode,
   type Identity,
   type IdentityId,
   type Node,
+  type NodeId,
   type Proposal,
   type ProposalId,
   ProposeAnchorInput,
   type ProposeAnchorOutput,
+  ProposeExcerptInput,
+  type ProposeExcerptOutput,
   type SubTopic,
   type SubTopicId,
 } from '@anchorage/contracts';
@@ -113,6 +118,31 @@ export class Server {
       throw new ServerError('invalid_state', `cause is ${cause.status}`);
     }
     return cause;
+  }
+
+  // Resolve an active anchor node that lives in the given cause. The
+  // cause check follows the parent through its home sub-topic, since
+  // nodes don't carry a cause_id directly — they're partitioned across
+  // sub-topics, and sub-topics belong to a cause.
+  private requireActiveAnchorInCause(nodeId: NodeId, causeId: CauseId): AnchorNode {
+    const node = this.store.nodes.get(nodeId);
+    if (!node) {
+      throw new ServerError('not_found', `parent node not found: ${nodeId}`);
+    }
+    if (node.kind !== 'anchor') {
+      throw new ServerError('invalid_input', `parent ${nodeId} is not an anchor`);
+    }
+    if (node.status !== 'active') {
+      throw new ServerError('invalid_state', `parent anchor is ${node.status}`);
+    }
+    const home = this.store.subTopics.get(node.home_sub_topic_id);
+    if (!home || home.cause_id !== causeId) {
+      throw new ServerError(
+        'invalid_input',
+        `parent anchor ${nodeId} does not belong to cause ${causeId}`,
+      );
+    }
+    return node;
   }
 
   readonly bootstrap = {
@@ -235,6 +265,49 @@ export class Server {
       this.store.verifiedRefs.set(proposal.id, verified);
       return { proposal_id: proposal.id };
     },
+
+    // PRD §Write-path tools: propose_excerpt stages an excerpt
+    // proposal under an existing accepted anchor. Span-against-source
+    // verification is structural-only here — the schema enforces non-
+    // empty `text` and non-negative `offset`. Real fetch+match against
+    // the parent anchor's source content waits for the verification
+    // engine. Until then, the parent must already be an active node,
+    // which is the strictest check we can do without I/O.
+    proposeExcerpt: async (
+      caller: Caller,
+      input: ProposeExcerptInput,
+    ): Promise<ProposeExcerptOutput> => {
+      const parsed = ProposeExcerptInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+
+      const cause = this.requireActiveCause(parsed.cause_id);
+      this.requireActiveSubTopicInCause(parsed.home_sub_topic_id, cause.id, 'home');
+      const memberships = parsed.memberships ?? [];
+      for (const m of memberships) {
+        this.requireActiveSubTopicInCause(m, cause.id, 'membership');
+      }
+      this.requireActiveAnchorInCause(parsed.parent_anchor_id, cause.id);
+
+      const now = this.clock.now();
+      const proposal: Proposal = {
+        id: this.idGen.proposalId(),
+        proposer_id: identity.id,
+        status: 'staged',
+        payload: {
+          kind: 'excerpt',
+          cause_id: cause.id,
+          home_sub_topic_id: parsed.home_sub_topic_id,
+          ...(memberships.length > 0 ? { memberships } : {}),
+          parent_anchor_id: parsed.parent_anchor_id,
+          content: parsed.content,
+          quoted_span: parsed.quoted_span,
+        },
+        created_at: now,
+        updated_at: now,
+      };
+      this.store.proposals.set(proposal.id, proposal);
+      return { proposal_id: proposal.id };
+    },
   };
 
   readonly curator = {
@@ -257,23 +330,25 @@ export class Server {
         );
       }
 
-      const node = this.materialize(proposal);
+      const result = this.materialize(proposal);
       const now = this.clock.now();
       this.store.proposals.set(proposal.id, { ...proposal, status: 'accepted', updated_at: now });
-      if (node) {
-        this.store.nodes.set(node.id, node);
-        return { node_id: node.id };
+      if (result.node) {
+        this.store.nodes.set(result.node.id, result.node);
       }
-      return {};
+      for (const edge of result.edges) {
+        this.store.edges.set(edge.id, edge);
+      }
+      return result.node ? { node_id: result.node.id } : {};
     },
   };
 
-  // Convert an accepted proposal into the graph node(s) it asserts.
-  // Only `anchor` is handled today; other kinds throw `invalid_state`
-  // until their materialization paths land. The function returns `null`
-  // for kinds that don't produce a node (e.g. membership, supersedes —
-  // those mutate edges rather than producing nodes; future commits).
-  private materialize(proposal: Proposal): Node | null {
+  // Convert an accepted proposal into the graph node and edges it
+  // asserts. Anchor and excerpt are handled today; other kinds throw
+  // `invalid_state` until their materialization paths land. Returning
+  // `node: null` is reserved for kinds that don't produce a node at
+  // all (e.g. membership, supersedes — those mutate edges only).
+  private materialize(proposal: Proposal): { node: Node | null; edges: readonly DerivesEdge[] } {
     const now = this.clock.now();
     if (proposal.payload.kind === 'anchor') {
       const verified = this.store.verifiedRefs.get(proposal.id);
@@ -296,7 +371,42 @@ export class Server {
         external_ref: proposal.payload.external_ref,
         content_hash: verified.content_hash,
       };
-      return node;
+      return { node, edges: [] };
+    }
+    if (proposal.payload.kind === 'excerpt') {
+      // PRD §Edges: derives edges are created atomically with their
+      // child node. The parent must still be active at acceptance
+      // time — re-check, because nothing prevents the parent from
+      // being superseded between propose and accept.
+      const parent = this.store.nodes.get(proposal.payload.parent_anchor_id);
+      if (!parent || parent.status !== 'active') {
+        throw new ServerError(
+          'invalid_state',
+          `parent anchor ${proposal.payload.parent_anchor_id} is not active at acceptance`,
+        );
+      }
+      const node: ExcerptNode = {
+        id: this.idGen.nodeId(),
+        kind: 'excerpt',
+        home_sub_topic_id: proposal.payload.home_sub_topic_id,
+        scope_memberships: proposal.payload.memberships ?? [],
+        content: proposal.payload.content,
+        status: 'active',
+        created_by: proposal.proposer_id,
+        created_at: now,
+        updated_at: now,
+        quoted_span: proposal.payload.quoted_span,
+      };
+      const edge: DerivesEdge = {
+        id: this.idGen.edgeId(),
+        kind: 'derives',
+        from: parent.id,
+        to: node.id,
+        status: 'active',
+        created_by: proposal.proposer_id,
+        created_at: now,
+      };
+      return { node, edges: [edge] };
     }
     throw new ServerError(
       'invalid_state',

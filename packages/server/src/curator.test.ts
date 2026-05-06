@@ -72,6 +72,68 @@ describe('curator.acceptProposal', () => {
     expect(() => f.server.curator.acceptProposal(proposal_id)).toThrow(ServerError);
   });
 
+  it('materializes an ExcerptNode plus a derives edge from its parent anchor', async () => {
+    const f = fixture();
+    const { proposal_id: anchor_proposal } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'parent',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const { node_id: anchor_id } = f.server.curator.acceptProposal(anchor_proposal);
+    if (!anchor_id) throw new Error('expected anchor');
+
+    const { proposal_id: excerpt_proposal } = await f.server.tools.proposeExcerpt(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_anchor_id: anchor_id,
+      content: 'span content',
+      quoted_span: { text: 'span', offset: 0 },
+    });
+    const { node_id: excerpt_id } = f.server.curator.acceptProposal(excerpt_proposal);
+    if (!excerpt_id) throw new Error('expected excerpt');
+
+    const excerpt = f.server.store.nodes.get(excerpt_id);
+    if (excerpt?.kind !== 'excerpt') throw new Error('expected excerpt node');
+    expect(excerpt.quoted_span).toEqual({ text: 'span', offset: 0 });
+
+    const edges = [...f.server.store.edges.values()];
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({
+      kind: 'derives',
+      from: anchor_id,
+      to: excerpt_id,
+      status: 'active',
+    });
+  });
+
+  it('rejects accepting an excerpt whose parent has been superseded', async () => {
+    const f = fixture();
+    const { proposal_id: anchor_proposal } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'parent',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const { node_id: anchor_id } = f.server.curator.acceptProposal(anchor_proposal);
+    if (!anchor_id) throw new Error('expected anchor');
+
+    const { proposal_id: excerpt_proposal } = await f.server.tools.proposeExcerpt(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_anchor_id: anchor_id,
+      content: 'x',
+      quoted_span: { text: 'x', offset: 0 },
+    });
+
+    // Simulate the parent being superseded between propose and accept.
+    const parent = f.server.store.nodes.get(anchor_id);
+    if (parent?.kind !== 'anchor') throw new Error('parent not anchor');
+    f.server.store.nodes.set(parent.id, { ...parent, status: 'superseded' });
+
+    expect(() => f.server.curator.acceptProposal(excerpt_proposal)).toThrow(ServerError);
+  });
+
   it('rejects an unknown proposal id', () => {
     const f = fixture();
     try {

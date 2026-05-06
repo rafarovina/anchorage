@@ -3,6 +3,8 @@ import type {
   AgentCredentialId,
   Cause,
   CauseId,
+  Edge,
+  EdgeId,
   Identity,
   IdentityId,
   Node,
@@ -26,6 +28,7 @@ export class MemoryStore {
   readonly subTopics = new Map<SubTopicId, SubTopic>();
   readonly proposals = new Map<ProposalId, Proposal>();
   readonly nodes = new Map<NodeId, Node>();
+  readonly edges = new Map<EdgeId, Edge>();
   // Server-observed verification metadata (content hashes, eventually
   // span offsets and provenance). Keyed by proposal_id because that is
   // when verification ran; copied onto the materialized node at
