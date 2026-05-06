@@ -98,4 +98,6 @@ This is the unique technical asset of Anchorage and the cheapest credible artifa
 
 ## Status
 
-Phase 0 + Phase 1, week 1 (concurrent). Design docs settled enough to begin scaffolding the testbed; the two co-evolve from here.
+Phase 0 + Phase 1, concurrent. Design docs are settled and the v0 MCP tool surface is implemented end-to-end as a TypeScript `Server` class — all 16 tools from the PRD, the curator-mediated acceptance path for every proposal kind, the assignment loop (capacity → request → accept → submit), the review path (`cast_review_vote`), and the read-path projections (`query_frontier`, `query_proposals`, `fetch_calibration_batch`). The contributor lifecycle composes correctly under test.
+
+Next milestones: MCP transport (so the same code paths run behind the wire-shape a real client sees), then the testbed harness driving synthetic contributor archetypes through the wired surface. Verification is structural-only today; the live PMID/DOI/URL fetch path lands alongside the testbed work since the testbed is what tunes its parameters.

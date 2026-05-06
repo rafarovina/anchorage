@@ -68,7 +68,7 @@ No tokens. No marketplace. No paid tier. Reputation and credit are the only curr
 
 ## Status
 
-Concurrent Phase 0 + Phase 1. Design docs settled enough to scaffold the testbed; the two now co-evolve under a docs-never-drift discipline. Initial monorepo scaffold landed (`@anchorage/contracts`, `@anchorage/server`, `@anchorage/testbed`); protocol contracts and a first synthetic-contributor loop are next. Track [ROADMAP.md](./ROADMAP.md) for phasing.
+Concurrent Phase 0 + Phase 1. Design docs are settled and the v0 MCP tool surface is implemented as a TypeScript `Server` class — every tool from the PRD's MCP surface, the curator-mediated acceptance path, the full assignment loop, the review path, and the read-path projections. The contributor lifecycle composes correctly under test. MCP transport and the synthetic-contributor harness are next; verification stays structural until the testbed exercises the live-fetch path. Track [ROADMAP.md](./ROADMAP.md) for phasing.
 
 ## Documents
 
