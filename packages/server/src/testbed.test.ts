@@ -407,6 +407,82 @@ describe('testbed: honest-strong archetype', () => {
     expect(daveRep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
   });
 
+  it('catches a lazy-accepter reviewer: rep moves down when honest rejecters converge', async () => {
+    // The smallest "the testbed measures attack-success rates"
+    // demonstration: a lazy-accepter votes accept on a proposal that
+    // honest rejecters mark for rejection. With threshold 2 on
+    // rejects, the proposal converges to rejected, and the lazy
+    // reviewer's accept-vote was inaccurate against the converged
+    // outcome — they lose rep. Honest rejecters gain rep. The pattern
+    // generalizes: as adversary load increases, rep distributions
+    // diverge, which is the testbed's measurement handle.
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(),
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'x' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'st',
+      description: 'x',
+      scope_query: 'x',
+    });
+    // Alice (proposer) submits a contributor-initiated anchor — a
+    // weak proposal that the rejecters will mark down.
+    await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'weak claim',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+
+    const lazy = server.bootstrap.mintIdentity({ display_name: 'lazy' });
+    const honest1 = server.bootstrap.mintIdentity({ display_name: 'honest-1' });
+    const honest2 = server.bootstrap.mintIdentity({ display_name: 'honest-2' });
+    const lazyClient = await wireArchetype(server, lazy.id);
+    const honest1Client = await wireArchetype(server, honest1.id);
+    const honest2Client = await wireArchetype(server, honest2.id);
+
+    // Lazy goes first — votes accept on whatever's offered.
+    await runHonestReviewer(lazyClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    // Then the honest rejecters. With threshold 2 rejects, the
+    // second one closes the proposal.
+    await runHonestReviewer(honest1Client, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: rejectAllDecider,
+    });
+    await runHonestReviewer(honest2Client, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: rejectAllDecider,
+    });
+
+    // The proposal converged to rejected.
+    const proposals = [...server.store.proposals.values()];
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]?.status).toBe('rejected');
+
+    // Reputation: lazy lost (inaccurate accept against rejected
+    // outcome); honest-1 and honest-2 gained (accurate rejects);
+    // alice (proposer) lost contributor-initiated proposer-loss.
+    const lazyRep = await lazyClient.queryReputation({ cause_id: cause.id });
+    expect(lazyRep.entries).toEqual([{ sub_topic_id: subTopic.id, score: -1 }]);
+    const honest1Rep = await honest1Client.queryReputation({ cause_id: cause.id });
+    expect(honest1Rep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
+    const honest2Rep = await honest2Client.queryReputation({ cause_id: cause.id });
+    expect(honest2Rep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
